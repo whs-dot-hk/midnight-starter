@@ -1,0 +1,20 @@
+# 3-validator Midnight devnet, no Cardano needed (main-chain follower mock).
+midnight-devnet:
+  cmd: ./bin/midnight-node     # `midnight-starter fetch` puts it here
+  version: 1.0.400
+  slots_per_epoch: 10
+  ports: { p2p: 30333, rpc: 9944, prometheus: 9615 }   # node i uses base + i
+  mainchain:
+    mode: mock
+  validators:
+    - name: alice
+    - name: bob
+    - name: charlie
+  full_nodes:
+    - name: archive
+  env:
+    RUST_LOG: info
+  # Deep-merged into the chain spec (null deletes a key).
+  genesis:
+    properties:
+      tokenSymbol: tDUST

@@ -1,0 +1,81 @@
+# Cardano *preview* stack for midnight-starter's cardano-preview mode / e2e test:
+# cardano-node -> cardano-db-sync -> Postgres (TLS) and Ogmios for contract txs.
+#
+#   ./gen-certs.sh
+#   POSTGRES_PASSWORD=change-me docker compose up -d
+#
+# First sync takes many hours (db-sync on preview: roughly a day; check
+# `docker compose logs -f cardano-db-sync`). Images: cardano-node 11.0.1,
+# ogmios v6.14.0, postgres 17 and the db-sync 13.7.0.4 stable release (amd64 only).
+name: midnight-preview
+
+services:
+  cardano-node:
+    image: ghcr.io/intersectmbo/cardano-node:11.0.1
+    environment:
+      - NETWORK=preview
+    volumes:
+      - node-db:/data
+      - node-ipc:/ipc
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      - POSTGRES_DB=cexplorer
+    # postgres refuses a key it does not own, so copy the host cert in first
+    entrypoint: >
+      bash -c "install -d -o postgres -m 700 /etc/ssl/pg &&
+               install -o postgres -m 600 /certs/server.key /etc/ssl/pg/server.key &&
+               install -o postgres -m 644 /certs/server.crt /etc/ssl/pg/server.crt &&
+               exec docker-entrypoint.sh postgres -c ssl=on
+                 -c ssl_cert_file=/etc/ssl/pg/server.crt -c ssl_key_file=/etc/ssl/pg/server.key
+                 -c max_connections=400 -c maintenance_work_mem=256MB"
+    volumes:
+      - ./certs:/certs:ro
+      - postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      retries: 30
+    restart: unless-stopped
+
+  cardano-db-sync:
+    image: ghcr.io/intersectmbo/cardano-db-sync:13.7.0.4
+    environment:
+      - NETWORK=preview
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=cexplorer
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - RESTORE_SNAPSHOT=${DBSYNC_SNAPSHOT:-}   # optional db-sync snapshot URL to skip most of the sync
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - node-ipc:/node-ipc
+      - db-sync-state:/var/lib/cexplorer
+    restart: unless-stopped
+
+  ogmios:
+    image: cardanosolutions/ogmios:v6.14.0
+    command:
+      - --host=0.0.0.0
+      - --node-socket=/ipc/node.socket
+      - --node-config=/config/preview/cardano-node/config.json
+    volumes:
+      - node-ipc:/ipc
+    ports:
+      - "127.0.0.1:1337:1337"
+    restart: unless-stopped
+
+volumes:
+  node-db:
+  node-ipc:
+  postgres:
+  db-sync-state:

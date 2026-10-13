@@ -1,0 +1,30 @@
+# 3-validator Midnight devnet that follows Cardano *preview* via cardano-db-sync.
+#
+# Prerequisites (see README): a synced preview cardano-node + db-sync + Postgres
+# with TLS, and your own partner-chain contracts on preview whose permissioned
+# candidates are the keys `midnight-starter init` writes to data/<chain>/validators.json.
+midnight-preview-devnet:
+  cmd: ../bin/midnight-node
+  version: 1.0.400
+  slots_per_epoch: 10
+  ports: { p2p: 31333, rpc: 10944, prometheus: 10615 }
+  mainchain:
+    mode: cardano-preview
+    db_sync_postgres: "postgres://postgres:${DBSYNC_PASSWORD}@127.0.0.1:5432/cexplorer?sslmode=require"
+    # Your deployment (partner-chains `prepare-configuration` output). Without these
+    # the spec uses Midnight's own preview contracts from res/preview.
+    # pc_chain_config: ./my-preview/pc-chain-config.json
+    # permissioned_candidates_policy_id: "0x..."
+    # federated_authority_config: ./my-preview/federated-authority-config.json
+    env:
+      # Already the node defaults; shown for clarity.
+      CARDANO_SECURITY_PARAMETER: "432"
+      CARDANO_ACTIVE_SLOTS_COEFF: "0.05"
+      BLOCK_STABILITY_MARGIN: "10"
+      MC__FIRST_EPOCH_TIMESTAMP_MILLIS: "1666656000000"
+      MC__EPOCH_DURATION_MILLIS: "86400000"
+      MC__SLOT_DURATION_MILLIS: "1000"
+  validators:
+    - name: alice
+    - name: bob
+    - name: charlie
