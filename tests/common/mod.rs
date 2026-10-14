@@ -58,6 +58,8 @@ impl Devnet {
 
     pub fn try_run(&self, args: &[&str]) -> Output {
         Command::new(BIN)
+            .arg("--env")
+            .arg(&self.chain) // never a developer's .env.undeployed
             .arg("--config")
             .arg(self.dir.join("devnet.yaml"))
             .arg("--data")

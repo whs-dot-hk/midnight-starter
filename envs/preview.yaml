@@ -1,9 +1,10 @@
-# 3-validator Midnight devnet that follows Cardano *preview* via cardano-db-sync.
+# 3-validator devnet that follows Cardano *preview* via cardano-db-sync.
+# Secrets (DBSYNC_PASSWORD) come from .env.preview; see .env.preview.example.
 #
 # Prerequisites (see README): a synced preview cardano-node + db-sync + Postgres
 # with TLS, and your own partner-chain contracts on preview whose permissioned
 # candidates are the keys `midnight-starter init` writes to data/<chain>/validators.json.
-midnight-preview-devnet:
+preview:
   cmd: ../bin/midnight-node
   version: 1.0.400
   slots_per_epoch: 10
