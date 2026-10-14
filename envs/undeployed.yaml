@@ -1,6 +1,7 @@
-# 3-validator Midnight devnet, no Cardano needed (main-chain follower mock).
-midnight-devnet:
-  cmd: ./bin/midnight-node     # `midnight-starter fetch` puts it here
+# Local devnet (network id `undeployed`): 3 validators + 1 archive node,
+# no Cardano needed (main-chain follower mock).
+undeployed:
+  cmd: ../bin/midnight-node    # `midnight-starter fetch` puts it here
   version: 1.0.400
   slots_per_epoch: 10
   ports: { p2p: 30333, rpc: 9944, prometheus: 9615 }   # node i uses base + i

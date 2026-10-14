@@ -15,9 +15,13 @@ use std::time::Duration;
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    /// Devnet description.
-    #[arg(long, short, global = true, default_value = "devnet.yaml")]
-    config: PathBuf,
+    /// Network to run: envs/<env>.yaml, plus .env.<env> if present
+    /// [default: the --config file's stem, else undeployed].
+    #[arg(long, short, global = true, env = "MN_ENV")]
+    env: Option<String>,
+    /// Devnet description [default: envs/<env>.yaml].
+    #[arg(long, short, global = true)]
+    config: Option<PathBuf>,
     /// Root data directory; each chain lives in <data>/<chain>.
     #[arg(long, global = true, default_value = "./data")]
     data: PathBuf,
@@ -78,14 +82,19 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config_dir = cli
-        .config
+    // `--config envs/preview.yaml` alone means env `preview`
+    let env = match (&cli.env, &cli.config) {
+        (Some(e), _) => e.clone(),
+        (None, Some(c)) => c.file_stem().context("--config has no file name")?.to_string_lossy().into_owned(),
+        (None, None) => "undeployed".into(),
+    };
+    load_dotenv(Path::new(&format!(".env.{env}")));
+    let config_path = cli.config.clone().unwrap_or_else(|| Path::new("envs").join(format!("{env}.yaml")));
+    let config_path = config_path
         .canonicalize()
-        .with_context(|| format!("{} not found", cli.config.display()))?
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let cfg = config::load(&cli.config)?;
+        .with_context(|| format!("{} not found", config_path.display()))?;
+    let config_dir = config_path.parent().unwrap().to_path_buf();
+    let cfg = config::load(&config_path)?;
     let (chain, ccfg) = match &cli.chain {
         Some(c) => (c.clone(), cfg.get(c).with_context(|| format!("chain {c} not in config"))?.clone()),
         None => {
@@ -94,19 +103,22 @@ fn main() -> Result<()> {
             (k, v)
         }
     };
+    if chain != env {
+        eprintln!("note: chain `{chain}` from {} runs under env `{env}`; data in {}", config_path.display(), cli.data.join(&chain).display());
+    }
     let home = cli.data.join(&chain);
 
     match &cli.cmd {
-        Cmd::Fetch { dir } => fetch(&ccfg.version, dir),
+        Cmd::Fetch { dir } => fetch(&ccfg.version, dir, &config_path),
         Cmd::Init { keep_keys } => {
             init::init(&chain, &ccfg, &config_dir, &cli.data, *keep_keys)?;
             println!("initialized {}", home.display());
             Ok(())
         }
-        Cmd::Start { detach, only } => start(&cli, &chain, &home, *detach, only),
+        Cmd::Start { detach, only } => start(&cli, &env, &config_path, &chain, &home, *detach, only),
         Cmd::Serve { detach } => {
             init::init(&chain, &ccfg, &config_dir, &cli.data, false)?;
-            start(&cli, &chain, &home, *detach, &[])
+            start(&cli, &env, &config_path, &chain, &home, *detach, &[])
         }
         Cmd::Stop => supervisor::stop(&home),
         Cmd::Status => {
@@ -141,14 +153,16 @@ fn main() -> Result<()> {
     }
 }
 
-fn start(cli: &Cli, chain: &str, home: &Path, detach: bool, only: &[String]) -> Result<()> {
+fn start(cli: &Cli, env: &str, config: &Path, chain: &str, home: &Path, detach: bool, only: &[String]) -> Result<()> {
     let programs = supervisor::load_programs(home)?;
     if detach {
         // re-exec ourselves as a foreground `start` built from the parsed options
         // (init, if any, already happened in this process)
         let mut args = vec![
+            "--env".to_string(),
+            env.to_string(),
             "--config".to_string(),
-            cli.config.display().to_string(),
+            config.display().to_string(),
             "--data".to_string(),
             cli.data.display().to_string(),
             "--chain".to_string(),
@@ -159,6 +173,33 @@ fn start(cli: &Cli, chain: &str, home: &Path, detach: bool, only: &[String]) -> 
         return supervisor::detach(home, &args);
     }
     supervisor::run(home, &programs, only)
+}
+
+/// `KEY=VALUE` lines of `path` into the environment (if the file exists).
+/// Values may be bare, "double" or 'single' quoted; a bare value ends at ` #`.
+/// Variables already set in the shell win. Bad lines are reported and
+/// skipped, so a typo never blocks `stop`.
+fn load_dotenv(path: &Path) {
+    let Ok(raw) = std::fs::read_to_string(path) else { return };
+    for (n, line) in raw.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = line.trim_start_matches("export ").split_once('=') else {
+            eprintln!("warning: {}:{}: expected KEY=VALUE, skipped", path.display(), n + 1);
+            continue;
+        };
+        let (k, v) = (k.trim(), v.trim());
+        let v = match v.chars().next() {
+            Some(q @ ('"' | '\'')) => v[1..].split(q).next().unwrap_or_default(),
+            _ => v.split(" #").next().unwrap_or_default().trim_end(),
+        };
+        if std::env::var_os(k).is_none() {
+            // single-threaded: nothing else reads the environment yet
+            unsafe { std::env::set_var(k, v) };
+        }
+    }
 }
 
 /// `node1`, `1`, or a validator name from the config (`alice`) -> `node1`.
@@ -176,7 +217,7 @@ fn resolve_node(home: &Path, node: &str) -> Result<String> {
         .with_context(|| format!("no node named {node}; see {}", home.join("validators.json").display()))
 }
 
-fn fetch(version: &str, dir: &Path) -> Result<()> {
+fn fetch(version: &str, dir: &Path, config: &Path) -> Result<()> {
     let arch = match std::env::consts::ARCH {
         "x86_64" => "amd64",
         "aarch64" => "arm64",
@@ -193,7 +234,14 @@ fn fetch(version: &str, dir: &Path) -> Result<()> {
     let ok = Command::new("tar").arg("xzf").arg(&tarball).arg("-C").arg(dir).status()?;
     ensure!(ok.success(), "extract failed");
     std::fs::remove_file(&tarball)?;
-    println!("unpacked into {} (set `cmd: {}/midnight-node`)", dir.display(), dir.display());
+    let bin = dir.canonicalize()?.join("midnight-node");
+    let config_dir = config.parent().unwrap();
+    // `cmd` is relative to the yaml: say `../bin/midnight-node` when we can
+    let hint = match (bin.parent().unwrap().parent(), config_dir.parent()) {
+        (Some(b), Some(c)) if b == c => format!("../{}/midnight-node", dir.file_name().unwrap().to_string_lossy()),
+        _ => bin.display().to_string(),
+    };
+    println!("unpacked into {} (set `cmd: {hint}` in {})", dir.display(), config.display());
     Ok(())
 }
 
@@ -224,4 +272,29 @@ fn chain_info(port: u16) -> Result<String> {
     let fin = hex(&rpc(port, "chain_getHeader", json!([fin_hash]))?);
     let health = rpc(port, "system_health", json!([]))?;
     Ok(format!("best #{best}  finalized #{fin}  peers {}  syncing {}", health["peers"], health["isSyncing"]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_dotenv;
+
+    #[test]
+    fn dotenv_quoting_and_precedence() {
+        let dir = std::env::temp_dir().join(format!("ms-dotenv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join(".env.test");
+        std::fs::write(
+            &f,
+            "# comment\nMS_T_BARE=hunter2 # note\nMS_T_SQ='sq # kept'\nMS_T_DQ=\"dq val\"\nBROKEN\nexport MS_T_EXP=x\nMS_T_SET=file\n",
+        )
+        .unwrap();
+        unsafe { std::env::set_var("MS_T_SET", "shell") };
+        load_dotenv(&f);
+        assert_eq!(std::env::var("MS_T_BARE").unwrap(), "hunter2");
+        assert_eq!(std::env::var("MS_T_SQ").unwrap(), "sq # kept");
+        assert_eq!(std::env::var("MS_T_DQ").unwrap(), "dq val");
+        assert_eq!(std::env::var("MS_T_EXP").unwrap(), "x");
+        assert_eq!(std::env::var("MS_T_SET").unwrap(), "shell", "shell wins over file");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

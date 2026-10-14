@@ -3,3 +3,6 @@
 /bin
 /e2e/preview/certs
 /.claude
+# .env.<env> is loaded when --env <env> / MN_ENV=<env> is selected
+.env.*
+!.env.*.example
